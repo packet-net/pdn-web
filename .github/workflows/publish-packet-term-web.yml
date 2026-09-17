@@ -1,22 +1,27 @@
 name: publish
 
-# Pushes index.html to OARC object storage (folder 4852 — the
+# Pushes packet-term-web/index.html to OARC object storage (folder 4852 - the
 # packet-term.m0lte.uk static-site folder) on every push to main.
-# This repo is a single-file static demo, so the "build" is a no-op
-# and the only artefact is index.html itself.
+# The app is a single static file, so the "build" is a no-op and the only
+# artefact is index.html itself.
+#
+# This repo holds one folder per UI and they are published in different ways:
+# this one goes to OARC object storage and is served from packet-term.m0lte.uk,
+# while soundmodem-web goes to this repo's GitHub Pages site. Each app keeps the
+# pipeline it already had; nothing here is shared between them on purpose.
 
 on:
   push:
     branches: [main]
     paths:
-      - 'index.html'
+      - 'packet-term-web/**'
       - '.github/workflows/publish.yml'
   workflow_dispatch:
-    # Manual force-publish — useful if you've redeployed by hand and
+    # Manual force-publish - useful if you've redeployed by hand and
     # want CI to re-establish the canonical state.
 
 concurrency:
-  # Don't overlap publishes — last writer wins is fine since we always
+  # Don't overlap publishes - last writer wins is fine since we always
   # upload index.html with --overwrite, but avoid the racy interleave.
   group: publish-${{ github.ref }}
   cancel-in-progress: false
@@ -36,7 +41,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: fetch OARC object storage CLI
-        # Pulled fresh on every run — the CLI is small and OARC is the
+        # Pulled fresh on every run - the CLI is small and OARC is the
         # canonical home for it. No vendoring + no version-pin: we always
         # publish via the latest CLI the service ships. Installed into a
         # venv to sidestep PEP 668 on system Python.
@@ -55,7 +60,7 @@ jobs:
           "${RUNNER_TEMP}/venv/bin/python" \
             "${RUNNER_TEMP}/object-storage-cli/object_storage_cli.py" \
             --token "${OARC_TOKEN}" \
-            --upload index.html \
+            --upload packet-term-web/index.html \
             --folder "${OARC_FOLDER_ID}" \
             --overwrite \
             --json
@@ -63,5 +68,5 @@ jobs:
       - name: fail if OARC_TOKEN missing
         if: env.OARC_TOKEN == ''
         run: |
-          echo "::error::OARC_TOKEN secret is not set on this repo — upload was skipped. Add it on the repo's settings page."
+          echo "::error::OARC_TOKEN secret is not set on this repo - upload was skipped. Add it on the repo's settings page."
           exit 1

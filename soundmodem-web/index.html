@@ -1,0 +1,975 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pdn-soundmodem in the browser</title>
+<style>
+  :root { color-scheme: dark; --bg:#101418; --panel:#171d24; --line:#2a333d; --ink:#d6e0ea; --dim:#7d8a99; --on:#4ade80; --off:#374151; --hot:#f87171; --amber:#f59e0b; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  header { padding:14px 18px; border-bottom:1px solid var(--line); display:flex; gap:14px; align-items:baseline; flex-wrap:wrap; }
+  h1 { font-size:15px; margin:0; font-weight:600; letter-spacing:.02em; }
+  .sub { color:var(--dim); font-size:12px; }
+  /* A fixed height rather than a minimum, so the monitor pane can be a column that scrolls
+     above a line-entry box pinned to its bottom. On a narrow window the two stack and the page
+     scrolls as a whole instead, because a keyboard-to-keyboard box wedged into a third of a
+     phone screen is worse than one you scroll to. */
+  main { display:grid; grid-template-columns:320px 1fr; gap:0; height:calc(100vh - 52px); }
+  @media (max-width:820px) { main { grid-template-columns:1fr; height:auto; } }
+  aside { padding:16px 18px; border-right:1px solid var(--line); display:flex; flex-direction:column;
+          gap:14px; overflow:auto; }
+  section h2 { font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); margin:0 0 6px; font-weight:600; }
+  label { display:block; font-size:12px; color:var(--dim); margin:8px 0 3px; }
+  select, input, button { width:100%; background:var(--panel); color:var(--ink); border:1px solid var(--line); border-radius:5px; padding:7px 9px; font:inherit; font-size:13px; }
+  button { cursor:pointer; }
+  button:hover:not(:disabled) { border-color:#3d4a58; }
+  button:disabled { opacity:.45; cursor:default; }
+  button.go { background:#1d4ed8; border-color:#1d4ed8; color:#fff; }
+  .row { display:flex; gap:8px; }
+  .lamps { display:flex; gap:16px; padding:10px 0; }
+  .lamp { display:flex; gap:7px; align-items:center; font-size:12px; color:var(--dim); }
+  .dot { width:11px; height:11px; border-radius:50%; background:var(--off); transition:background .1s; }
+  .dot.on { background:var(--on); box-shadow:0 0 8px #4ade8066; }
+  .dot.tx { background:var(--hot); box-shadow:0 0 8px #f8717166; }
+  #pane { display:flex; flex-direction:column; min-height:0; }
+  /* The monitor's height is what the handle sets; the session pane takes what is left. Both
+     scroll on their own, so reading back through one does not move the other. */
+  #monitor { flex:0 0 45%; padding:16px 18px; overflow:auto; font-size:13px; min-height:60px; }
+  #session { flex:1 1 0; padding:16px 18px; overflow:auto; font-size:13px; min-height:60px; }
+  #split {
+    flex:none; height:7px; background:var(--panel); border-top:1px solid var(--line);
+    border-bottom:1px solid var(--line); cursor:row-resize; position:relative;
+  }
+  /* A grip, so it reads as something you can take hold of rather than a rule between two panes. */
+  #split::after {
+    content:''; position:absolute; left:50%; top:3px; width:34px; height:1px; margin-left:-17px;
+    background:var(--dim);
+  }
+  #split:hover, #split:focus { background:#1f2732; outline:none; }
+  #split:focus::after, #split.dragging::after { background:#60a5fa; }
+  /* While the handle is being dragged the pointer is over the panes, not the handle, and a
+     text selection would follow it across both of them. */
+  body.dragging { user-select:none; cursor:row-resize; }
+  @media (max-width:820px) { #monitor, #session { min-height:35vh; } }
+
+  /* One line of the session. Nothing is wrapped at a fixed column: the pane is whatever width
+     the window is, and a BBS line longer than it wraps where it runs out rather than where
+     somebody guessed. Breaks are preserved because the text already has them. */
+  .line { white-space:pre-wrap; word-break:break-word; padding:1px 0; }
+  .line.me { color:#c4b5fd; }
+  .line.sys { color:var(--dim); font-style:italic; }
+  .line.err { color:var(--hot); }
+  /* The line you type into the session. Pinned under the monitor, because what you send and
+     what comes back are one conversation and reading it in two places is not. */
+  #entry { flex:none; border-top:1px solid var(--line); padding:10px 18px; }
+  #line:disabled { color:var(--dim); }
+  .frame { padding:6px 0; border-bottom:1px solid #1d242c; white-space:pre-wrap; word-break:break-word; }
+  .frame .meta { color:var(--dim); font-size:11px; }
+  .frame.tx { color:#93c5fd; }
+  .frame.sys { color:var(--dim); font-style:italic; }
+  .frame.err { color:var(--hot); }
+
+  /* Levels. Two gain controls either side of the modem, in dB, doing on a browser station what
+     the Mixer group does on a station page: the capture level the demodulator is given, and the
+     level that drives the radio. A dB with nothing beside it is not a level anyone can act on,
+     so each carries its reading and the capture one carries a meter. */
+  .lev { display:flex; gap:8px; align-items:center; margin-top:6px; }
+  /* display and margin because the page's own label rule stacks them, and these sit in a row. */
+  .lev .side { width:20px; font-size:11px; color:var(--dim); flex:none;
+               display:inline-block; margin:0; }
+  .lev input[type=range] { flex:1; min-width:0; padding:0; accent-color:#60a5fa; }
+  .lev .db { width:70px; text-align:right; font-size:11px; color:var(--ink); flex:none;
+             font-variant-numeric:tabular-nums; }
+  /* The bar is scaled and banded from the same figures the station page uses, so an operator who
+     has aimed one meter has aimed both. */
+  .meter { position:relative; flex:1; min-width:60px; height:10px; background:#0b0f14;
+           border:1px solid var(--line); border-radius:2px; overflow:hidden; }
+  .meter .zone { position:absolute; top:0; bottom:0; background:rgba(74,222,128,.28); }
+  .meter .hotband { position:absolute; top:0; bottom:0; right:0; background:rgba(248,113,113,.28); }
+  .meter .bar { position:absolute; left:0; top:2px; bottom:2px; width:0; background:#7fd8a0; }
+  .meter .bar.quiet { background:#6f7d8c; }
+  .meter .bar.hot { background:var(--hot); }
+  /* The RMS as a hairline: a second bar would compete with the peak, a tick reads as context. */
+  .meter .rms { position:absolute; top:0; bottom:0; width:1px; background:rgba(255,255,255,.55); }
+  /* Latched for three seconds by its own timer: a clip is one block out of roughly fifty a
+     second and would blink past unseen, and it is the one reading on this meter that has to be
+     acted on rather than noticed. */
+  #clip { flex:none; width:30px; font-size:9px; letter-spacing:.06em; color:var(--hot);
+          visibility:hidden; }
+  #clip.lit { visibility:visible; }
+  .note { font-size:11px; color:var(--dim); margin-top:7px; line-height:1.4; }
+  .note.bad { color:#ff9a7a; }
+
+  /* TX test: the one control here that puts a signal on the air. Amber while it is on, because
+     an operator who has walked away from the keyboard should be able to tell from the doorway. */
+  #ttGo.on { background:var(--amber); border-color:var(--amber); color:#12141a; }
+</style>
+</head>
+<body>
+<header>
+  <h1>pdn-soundmodem &rarr; WebAssembly</h1>
+  <span class="sub" id="banner">loading the modem core...</span>
+</header>
+<main>
+  <aside>
+    <section>
+      <h2>Radio</h2>
+      <label for="mode">Mode</label>
+      <select id="mode"></select>
+      <label for="input">Audio in</label>
+      <select id="input"><option>grant microphone access first</option></select>
+      <label for="output">Audio out</label>
+      <select id="output"><option>default</option></select>
+      <label for="ptt">PTT</label>
+      <div class="row">
+        <select id="ptt"><option value="none">none (VOX / receive only)</option><option value="rts">serial RTS</option><option value="dtr">serial DTR</option><option value="cm108">CM108 GPIO3</option></select>
+        <button id="pick-ptt" style="width:auto; white-space:nowrap;">Port...</button>
+      </div>
+      <!-- TXDELAY: how long the radio is keyed and sending preamble before the frame itself
+           starts, which is a property of the radio rather than of the mode. It is inside the
+           modulated audio, so it costs airtime on every transmission - long enough that the far
+           end's demodulator has locked, and not a millisecond more. It applies to the TX test's
+           silent lead as well. -->
+      <label for="txdelay">TXDELAY</label>
+      <div class="lev">
+        <input type="range" id="txdelay" min="50" max="1000" step="10" value="300"
+               title="Preamble sent before the frame, in milliseconds - the time the radio needs to come up">
+        <span class="db" id="txdelayRead">300 ms</span>
+      </div>
+      <label for="mycall">MYCALL</label>
+      <input id="mycall" value="M0LTE-1" spellcheck="false">
+      <div class="lamps">
+        <div class="lamp"><span class="dot" id="dcd"></span>DCD</div>
+        <div class="lamp"><span class="dot" id="busy"></span>BUSY</div>
+        <div class="lamp"><span class="dot" id="tx"></span>TX</div>
+      </div>
+      <button id="start" class="go">Start modem</button>
+    </section>
+    <section id="levels">
+      <h2>Levels</h2>
+      <!-- Receive gain, applied between the audio device and the modem. 0 dB is the device's
+           audio untouched; a browser hands over whatever the operating system's capture level
+           made of it, and this is the trim a station page would do on the card. -->
+      <div class="lev">
+        <label class="side" for="rxgain">RX</label>
+        <input type="range" id="rxgain" min="-20" max="30" step="0.5" value="0"
+               title="Receive gain in dB, applied before the demodulator and the meter">
+        <span class="db" id="rxgainRead">0.0 dB</span>
+      </div>
+      <div class="lev">
+        <span class="side"></span>
+        <div class="meter" id="meter" title="Level at the modem's input, after the receive gain">
+          <div class="zone" id="meterZone"></div><div class="hotband" id="meterHot"></div>
+          <div class="bar" id="meterBar"></div><div class="rms" id="meterRms"></div>
+        </div>
+        <span class="db" id="meterRead">-</span>
+        <span id="clip" title="The input reached full scale: turn RX gain down, or the sending station's transmit audio">CLIP</span>
+      </div>
+      <!-- Transmit gain, applied to everything the modem sends: frames and test tones alike, so
+           the test really does measure what a frame gets. 0 dB is the modulator's own output,
+           which peaks at 0.8, and down from there is the usual direction of travel because what
+           it is driving is a microphone or data input expecting millivolts. -->
+      <div class="lev">
+        <label class="side" for="txgain">TX</label>
+        <input type="range" id="txgain" min="-40" max="0" step="0.5" value="0"
+               title="Transmit gain in dB, applied to frames and test tones alike">
+        <span class="db" id="txgainRead">0.0 dB</span>
+      </div>
+      <div class="note" id="levelNote"></div>
+    </section>
+    <section>
+      <h2>Send</h2>
+      <!-- Connected mode first: it is what the window below is for, and what an operator reaches
+           for. C and D, as a terminal has called them since packet began. No default callsign:
+           the station that used to be here is a real node and a page that arrives pointed at
+           somebody's BBS will eventually connect to it by accident. -->
+      <label for="peer">Connect to</label>
+      <div class="row">
+        <input id="peer" value="" placeholder="callsign" spellcheck="false">
+        <button id="connect" disabled style="width:auto;" title="Connect to the station named above">C</button>
+        <button id="disconnect" disabled style="width:auto;" title="Disconnect the established session">D</button>
+      </div>
+      <label for="beacon">UI frame to APRS-style unproto</label>
+      <input id="beacon" value="hello from a browser" spellcheck="false">
+      <div class="row" style="margin-top:8px;">
+        <input id="unproto" value="TEST" spellcheck="false" style="flex:0 0 40%;">
+        <button id="send" disabled>Send UI</button>
+      </div>
+    </section>
+    <!-- TX test: two tones for a linearity check, or one tone for a carrier level or an FM
+         deviation check by Bessel null. It goes out through the ordinary transmit path - the
+         same PTT line, the same transmit gain - which is the point of it: a test that took a
+         different route to the air would measure that route. -->
+    <section>
+      <h2>TX test</h2>
+      <label for="ttKind">Tones</label>
+      <select id="ttKind" title="Two tones for a linearity check; one tone for a carrier level, or for an FM deviation check by Bessel null"></select>
+      <div class="row" style="margin-top:8px;">
+        <input id="ttHz" value="1248" spellcheck="false" inputmode="decimal" hidden
+               style="flex:0 0 40%;" title="Tone frequency in Hz">
+        <input id="ttSecs" value="5" spellcheck="false" inputmode="decimal"
+               style="flex:0 0 40%;" title="Seconds on air">
+        <button id="ttGo" disabled title="Key the radio and send the test through the normal transmit path at the transmit gain set above">Send</button>
+      </div>
+      <div class="note" id="ttWhat"></div>
+    </section>
+  </aside>
+  <div id="pane">
+    <!-- Two halves of one window: what the radio hears, and what the QSO says. The monitor is
+         every frame the modem decoded plus this station's own running commentary; the session
+         pane is the conversation on its own, which is the thing you are actually reading while
+         connected. The handle between them is draggable, and where it is left is remembered. -->
+    <div id="monitor" aria-label="Frames heard on the channel"></div>
+    <div id="split" role="separator" aria-orientation="horizontal" tabindex="0"
+         title="Drag to resize; double-click for an even split; arrow keys move it too"></div>
+    <div id="session" aria-label="The connected-mode session"></div>
+    <div id="entry">
+      <input id="line" spellcheck="false" disabled autocomplete="off"
+             placeholder="connect to a station, then type here and press enter">
+    </div>
+  </div>
+</main>
+
+<script type="module">
+// The page is deliberately thin, and has no build step. Everything radio lives in
+// @packet-net/soundmodem - the wasm core, the audio graph, the PTT line and the CSMA
+// contention - and the link layer is @packet-net/ax25, which neither knows nor cares that its
+// frames arrived through a sound card rather than a TNC. What is left here is wiring and a
+// monitor pane. Both packages load from a CDN at run time, so this file is the whole demo.
+
+// Package specs are the single source of truth for the import URLs. Bump them here only.
+//
+// The modem floats to the newest 0.x rather than naming one release. This page deploys on a push
+// to main and the package only on a release, so an exact pin meant every release left the page
+// behind until something went and re-pinned it - a workflow, a token across two repositories,
+// and a thing to remember. A CARET RANGE WOULD NOT DO THIS: on a 0.x version caret means
+// patch-only, and `@packet-net/soundmodem@^0.69.0` resolves to 0.69.0 on jsDelivr (checked). The
+// bare major is what tracks minor releases. The cost is that jsDelivr caches a floating range
+// for hours, so a brand-new release reaches this page a little after it reaches npm.
+const PKG = {
+  soundmodem: '@packet-net/soundmodem@0',
+  ax25: '@packet-net/ax25@0.18.0',
+}
+
+// jsDelivr for the modem, and not as a preference. The package is already plain ESM with no
+// dependencies, so it needs no transform - and it must not get one. esm.sh bundles each module
+// and returns a re-export stub for the AudioWorklet, which a worklet cannot follow, because
+// worklet scope has no module resolution: registerProcessor would never run and the modem would
+// be deaf. jsDelivr serves the files exactly as published, which keeps every
+// `new URL(..., import.meta.url)` inside the package resolving to the WebAssembly bundle and to
+// the worklet. esm.sh is fine for @packet-net/ax25, which is ordinary dependency-resolving code.
+const jsdelivr = (spec) => `https://cdn.jsdelivr.net/npm/${spec}/src/index.js`
+const esm = (spec) => `https://esm.sh/${spec}`
+
+// ?local loads the modem from the copy installed here rather than from the CDN, which is what
+// the page probe runs against and what you want when you are developing the package and this
+// page together: `npm install` for the pinned version, or `npm link @packet-net/soundmodem`
+// pointed at a pdn-soundmodem working tree (run its web/build.sh first, so the WebAssembly
+// bundle is there for this to find).
+const local = new URLSearchParams(location.search).has('local')
+const modemUrl = local ? './node_modules/@packet-net/soundmodem/src/index.js' : jsdelivr(PKG.soundmodem)
+
+const { SoundModem, SerialPtt, Cm108Ptt, NoPtt, SoundModemTransport } = await import(modemUrl)
+const { Ax25Listener, Callsign, decodeFrame, classify } = await import(esm(PKG.ax25))
+
+const $ = (id) => document.getElementById(id)
+// Appends a row to a pane and keeps it scrolled to the bottom - unless the operator has scrolled
+// back to read something, in which case yanking them to the end is the last thing they want.
+const appendTo = (pane, el, keep) => {
+  const atBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 40
+  pane.append(el)
+  while (pane.childElementCount > keep) pane.firstElementChild.remove()
+  if (atBottom) pane.scrollTop = pane.scrollHeight
+  return el
+}
+
+// The monitor half: every frame the modem decoded, and this station's own commentary.
+const log = (text, kind = '') => {
+  const el = document.createElement('div')
+  el.className = `frame ${kind}`
+  el.textContent = text
+  return appendTo($('monitor'), el, 500)
+}
+
+// ---------------------------------------------------------------- the session half
+// Turning an information field into display lines is not as simple as it looks, and the shape
+// below is the one packet-net/packet-term-tui arrived at on air (see ReceivedText.cs there):
+//
+//  - Packet data is CR-terminated, and a node's menu or help text arrives as ONE information
+//    field with the CRs INSIDE it. Those are real line breaks. Treat them as unprintable, which
+//    is what a naive printable-only filter does, and a BBS menu becomes one unreadable run.
+//  - CR, LF and CRLF are all accepted as the break, and CRLF is one break rather than two.
+//  - A line longer than the link's PACLEN is segmented across frames, so a field can end
+//    mid-line and the rest arrives in the next one. It belongs on the same row: that is how a
+//    300-character BBS line is put back together instead of being shown as two.
+//  - A field of nothing but terminators draws no row. It closes an open line and otherwise says
+//    nothing, which is what stops a node's keepalives filling the pane with blank rows.
+//  - Everything outside printable ASCII becomes '.', so a stray byte - or a BBS sending ANSI
+//    colour, which plenty do - cannot tear the pane about.
+//
+// One deliberate difference from that implementation: it drops EVERY trailing terminator, and
+// this drops one (with CRLF counted as one). A field ending "...\r\r" is a line and then a
+// blank line, and a BBS puts those between sections on purpose; dropping them all closes up the
+// spacing the far end asked for. Dropping exactly one still stops an ordinary line drawing an
+// empty row under itself, which is what the rule is for.
+const CR = 0x0D, LF = 0x0A
+const isBreak = (b) => b === CR || b === LF
+
+function splitReceived(bytes) {
+  const n = bytes.length
+  if (n === 0) return { lines: [], incomplete: false }
+  const incomplete = !isBreak(bytes[n - 1])
+
+  let anyText = false
+  for (let i = 0; i < n && !anyText; i++) anyText = !isBreak(bytes[i])
+  if (!anyText) return { lines: [], incomplete: false }
+
+  let end = n
+  if (bytes[end - 1] === LF) {
+    end--
+    if (end > 0 && bytes[end - 1] === CR) end--
+  } else if (bytes[end - 1] === CR) {
+    end--
+  }
+
+  const lines = []
+  let row = ''
+  for (let i = 0; i < end; i++) {
+    const b = bytes[i]
+    if (isBreak(b)) {
+      if (b === CR && i + 1 < end && bytes[i + 1] === LF) i++
+      lines.push(row)
+      row = ''
+      continue
+    }
+    row += b >= 0x20 && b < 0x7F ? String.fromCharCode(b) : '.'
+  }
+  lines.push(row)
+  return { lines, incomplete }
+}
+
+// The row the peer has not finished writing, or null. Anything else written to the pane closes
+// it: a line you typed must not have the far end's continuation land on the end of it.
+let openLine = null
+
+const chat = (text, kind = '') => {
+  openLine = null
+  const el = document.createElement('div')
+  el.className = `line ${kind}`
+  el.textContent = text
+  return appendTo($('session'), el, 2000)
+}
+
+// One information field, as rows.
+const deliver = (bytes) => {
+  const { lines, incomplete } = splitReceived(bytes)
+  if (lines.length === 0) {
+    openLine = null
+    return
+  }
+
+  let last = null
+  for (let i = 0; i < lines.length; i++) {
+    if (i === 0 && openLine) {
+      openLine.textContent += lines[i]
+      last = openLine
+    } else {
+      last = chat(lines[i])
+    }
+  }
+
+  openLine = incomplete ? last : null
+}
+
+let modem, transport, listener, session = null, myCall = '', ptt = NoPtt
+
+// The sessions this page has already wired handlers onto. A session reaches us twice on an
+// outbound dial (see the onSessionAccepted comment at Start), and attaching onData to it a
+// second time is how every line the far end sent got printed twice.
+const wired = new WeakSet()
+
+// ---------------------------------------------------------------- what the page remembers
+// A station is set up once, not once per reload: the mode, the callsigns, the levels, TXDELAY
+// and which kind of PTT all come back. This is localStorage, so it is this browser only - it is
+// never sent anywhere, never shared between viewers, and comes back empty in a private window or
+// with site data cleared. Every read and write is wrapped, because a browser that refuses to
+// store does not return nothing, it throws, and a page that cannot remember your levels must
+// still be a modem.
+const STORE = 'pdn-soundmodem-demo'
+const REMEMBERED = ['mode', 'txdelay', 'ptt', 'mycall', 'peer', 'rxgain', 'txgain']
+
+const recall = () => {
+  try { return JSON.parse(localStorage.getItem(STORE)) || {} } catch { return {} }
+}
+const remember = (extra) => {
+  try {
+    const saved = Object.assign(recall(), extra)
+    for (const id of REMEMBERED) saved[id] = $(id).value
+    localStorage.setItem(STORE, JSON.stringify(saved))
+  } catch { /* nothing to do about it, and nothing that depends on it */ }
+}
+
+modem = await SoundModem.load()
+for (const mode of modem.modes) {
+  const option = document.createElement('option')
+  option.value = option.textContent = mode
+  $('mode').append(option)
+}
+$('mode').value = 'afsk1200'
+
+// Restored before anything is wired up, so the handlers below apply what came back rather than
+// what the markup shipped with. A select whose remembered value no longer exists silently reads
+// as "", which would start the modem on no mode at all - so each one is checked back.
+const saved = recall()
+for (const id of REMEMBERED) {
+  const el = $(id)
+  const was = el.value
+  if (saved[id] !== undefined && saved[id] !== '') el.value = saved[id]
+  if (el.tagName === 'SELECT' && el.value === '') el.value = was
+  // change covers a select and a committed text box, input covers a slider being dragged and
+  // every keystroke. addEventListener rather than onchange, because the controls below claim
+  // those properties for what they actually do.
+  el.addEventListener('change', () => remember())
+  el.addEventListener('input', () => remember())
+}
+// Which version actually arrived. The spec above is a range, so the only way to state it is to
+// ask the CDN what it resolved to - and stating it is the point, because a banner that reports
+// what was asked for rather than what was loaded is worse than no banner. Cheap: the same range,
+// so the CDN has it cached from the import that just happened.
+const version = local ? 'local copy' : await fetch(`https://cdn.jsdelivr.net/npm/${PKG.soundmodem}/package.json`)
+  .then((answer) => answer.json())
+  .then((manifest) => manifest.version)
+  .catch(() => PKG.soundmodem.slice(PKG.soundmodem.lastIndexOf('@') + 1))
+$('banner').textContent = `soundmodem ${version}, ${modem.modes.length} modes, ready`
+log('modem core loaded. pick a mode and an input, then Start.', 'sys')
+
+// The two features below need a soundmodem newer than the CDN may be serving. This page deploys
+// on a push to main and the package only on a release, so a control can exist here a fortnight
+// before the code behind it is published - the CM108 option above says the same thing for the
+// same reason. Disable and say which version is wanted, rather than leaving a slider that moves
+// and does nothing and a Send button that throws.
+const haveLevels = 'rxGainDb' in modem && 'inputLevel' in modem
+const haveTxTest = typeof modem.testTone === 'function'
+const tooOld = `needs a newer soundmodem than ${version}`
+
+// ---------------------------------------------------------------- the handle between the panes
+// Where the split sits, as a fraction of the pane, so it means the same thing on a laptop and on
+// a monitor and survives a window resize. Remembered like everything else.
+const MIN_HALF = 60
+const setSplit = (fraction) => {
+  splitAt = Math.min(0.9, Math.max(0.1, fraction))
+  $('monitor').style.flexBasis = `${(splitAt * 100).toFixed(2)}%`
+  $('split').setAttribute('aria-valuenow', Math.round(splitAt * 100))
+}
+
+let splitAt = 0.45
+setSplit(Number(recall().split) || splitAt)
+
+// Pointer events rather than mouse ones, so the handle works under a finger and a stylus too.
+// Capture matters: once the drag starts the pointer is over the panes rather than the handle,
+// and without it the first movement loses the drag.
+$('split').onpointerdown = (event) => {
+  event.preventDefault()
+  $('split').setPointerCapture(event.pointerId)
+  $('split').classList.add('dragging')
+  document.body.classList.add('dragging')
+
+  const box = $('pane').getBoundingClientRect()
+  const move = (moved) => {
+    // Clamped so neither half can be dragged shut: a pane with no height cannot be scrolled
+    // back open, and the handle would be sitting on the floor of the window.
+    const y = Math.min(box.height - MIN_HALF, Math.max(MIN_HALF, moved.clientY - box.top))
+    setSplit(y / box.height)
+  }
+  const done = () => {
+    $('split').onpointermove = $('split').onpointerup = $('split').onpointercancel = null
+    $('split').classList.remove('dragging')
+    document.body.classList.remove('dragging')
+    remember({ split: splitAt })
+  }
+  $('split').onpointermove = move
+  $('split').onpointerup = done
+  $('split').onpointercancel = done
+}
+
+// Even halves, for when it has been dragged somewhere silly.
+$('split').ondblclick = () => { setSplit(0.5); remember({ split: splitAt }) }
+
+// And from the keyboard, because a divider that can only be dragged is a divider some people
+// cannot move at all.
+$('split').onkeydown = (event) => {
+  const step = { ArrowUp: -0.02, ArrowDown: 0.02, PageUp: -0.1, PageDown: 0.1 }[event.key]
+  if (step === undefined) return
+  event.preventDefault()
+  setSplit(splitAt + step)
+  remember({ split: splitAt })
+}
+
+// ---------------------------------------------------------------- levels
+// The meter's scale and its bands are the station page's (waterfall.html, the MIX_ constants,
+// which come from docs/dev/receive-levels.md): the zone sits above the earliest cliff any mode
+// has and below the strictest mode's headroom line, which is what a bar on an input that may be
+// carrying any of them has to be. Same figures here, so an operator who has aimed one meter has
+// aimed both.
+const METER_MIN = -60, TARGET_LOW = -18, TARGET_HIGH = -9, QUIET = -30, HOT = -6
+const meterPct = (db) => Math.max(0, Math.min(100, (db - METER_MIN) * 100 / (0 - METER_MIN)))
+$('meterZone').style.left = `${meterPct(TARGET_LOW)}%`
+$('meterZone').style.width = `${meterPct(TARGET_HIGH) - meterPct(TARGET_LOW)}%`
+$('meterHot').style.width = `${100 - meterPct(HOT)}%`
+
+// Live on the way in, not on release: a level is set by ear and by meter, and a slider that
+// only takes effect when you let go of it cannot be aimed.
+const drag = (slider, read, show) => {
+  const paint = () => { read.textContent = show(parseFloat(slider.value)) }
+  slider.oninput = paint
+  paint()
+}
+
+// ---------------------------------------------------------------- TXDELAY
+// The preamble in front of every frame, in milliseconds. It is carried inside the modulated
+// audio rather than being a wait here, so it costs airtime on every transmission: long enough
+// that the far end has locked, not a millisecond more. Applied to the transport, which is what
+// hands it to the modem for a frame and for the TX test's silent lead alike, and to the modem
+// as its own default. Set before Start as happily as after - the transport reads it at Start.
+drag($('txdelay'), $('txdelayRead'), (ms) => {
+  modem.txDelayMs = ms
+  if (transport) transport.txDelayMs = ms
+  return `${ms} ms`
+})
+
+if (haveLevels) {
+  const trim = (slider, read, apply) => drag(slider, read, (db) => {
+    apply(db)
+    return `${db > 0 ? '+' : ''}${db.toFixed(1)} dB`
+  })
+  // Set before Start as happily as after: the modem keeps the dB and applies it when the audio
+  // graph is built, so levels can be dialled in first and then the radio opened.
+  trim($('rxgain'), $('rxgainRead'), (db) => { modem.rxGainDb = db })
+  trim($('txgain'), $('txgainRead'), (db) => { modem.txGainDb = db })
+  $('levelNote').textContent =
+    `Aim received signals to peak in the green, ${TARGET_LOW} to ${TARGET_HIGH} dBFS, and never `
+    + `into the red; with nothing on channel the bar should sit below ${QUIET}. TX gain is what `
+    + 'drives the radio, and 0 dB is the modulator at full output: start low.'
+} else {
+  $('rxgain').disabled = $('txgain').disabled = true
+  $('levelNote').textContent = `Levels ${tooOld}.`
+  $('levelNote').classList.add('bad')
+}
+
+// A clip is one block out of roughly fifty a second and would blink past unseen, so it is
+// latched: it is the one reading on the meter that has to be acted on rather than noticed.
+let clipUntil = 0
+function paintMeter() {
+  if (!haveLevels) return
+  const { peak, rms, clip } = modem.inputLevel
+  const bar = $('meterBar')
+  bar.style.width = `${meterPct(peak)}%`
+  bar.classList.toggle('hot', clip || peak >= HOT)
+  bar.classList.toggle('quiet', !clip && peak < QUIET)
+  $('meterRms').style.left = `${meterPct(rms)}%`
+  // Below the bottom of the bar there is nothing to read: a silent input floors at -120 dBFS,
+  // which is a long number saying only that the card has stopped.
+  $('meterRead').textContent = peak <= METER_MIN ? `< ${METER_MIN} dBFS` : `${peak.toFixed(1)} dBFS`
+  $('meter').title = `peak ${peak.toFixed(1)} dBFS, rms ${rms.toFixed(1)} dBFS, at the modem's input`
+  if (clip) clipUntil = performance.now() + 3000
+  $('clip').classList.toggle('lit', performance.now() < clipUntil)
+}
+
+// ---------------------------------------------------------------- TX test
+// The one control on this page that puts a signal on the air on purpose. Nothing about it is
+// decided here: the tones and the presets are the core's own, the length is capped by the modem
+// rather than by this box, and what is shown is the sentence the modem hands back - the same
+// wording a station's journal carries for the same transmission.
+let testRunning = false
+const testSay = (text, bad) => {
+  $('ttWhat').textContent = text || ''
+  $('ttWhat').classList.toggle('bad', !!bad)
+}
+const chosenHz = () => $('ttKind').value === 'tone'
+  ? parseFloat($('ttHz').value)
+  : parseFloat($('ttKind').value.slice(5))
+
+if (haveTxTest) {
+  // Two tones for linearity, then one tone free, then the presets - each labelled with the FM
+  // deviation its Bessel null calibrates, so raising the transmit gain until the carrier
+  // disappears on a spectrum display sets a known deviation.
+  const [lowHz, highHz] = modem.twoTonePairHz
+  const kinds = [['two', `Two tone ${Math.round(lowHz)}+${Math.round(highHz)}`], ['tone', 'One tone']]
+  for (const preset of modem.besselNullPresets) {
+    kinds.push([`tone:${preset.toneHz}`,
+      `${Math.round(preset.toneHz)} Hz -> FM ${(preset.deviationHz / 1000).toFixed(1)} kHz dev`])
+  }
+  for (const [value, text] of kinds) {
+    const option = document.createElement('option')
+    option.value = value
+    option.textContent = text
+    $('ttKind').append(option)
+  }
+
+  // The frequency box belongs to the free tone only: the presets carry their own, and a box that
+  // could disagree with the label beside it would put the deviation reading out by that much.
+  const showKind = () => {
+    $('ttHz').hidden = $('ttKind').value !== 'tone'
+    if ($('ttKind').value === 'two') return testSay('')
+    const tone = chosenHz()
+    testSay(isFinite(tone) && tone > 0
+      ? `FM null at ${(modem.besselNullDeviationHz(tone) / 1000).toFixed(2)} kHz deviation`
+      : '')
+  }
+  $('ttKind').onchange = showKind
+  $('ttHz').oninput = showKind
+  showKind()
+
+  $('ttGo').onclick = async () => {
+    // Amber and reading Stop: the click ends the test rather than starting a second one. The
+    // modem fades what is on the air and withdraws what is still waiting for a clear channel.
+    if (testRunning) return transport.stopTestTone()
+
+    const asked = parseFloat($('ttSecs').value)
+    const request = {
+      twoTone: $('ttKind').value === 'two',
+      toneHz: chosenHz(),
+      seconds: isFinite(asked) && asked > 0 ? asked : undefined,
+    }
+    // Read first, so a tone the modem will not send is refused before anything is keyed.
+    let plan
+    try { plan = modem.describeTestTone(request) }
+    catch (refused) { return testSay(refused.message, true) }
+
+    testRunning = true
+    $('ttGo').classList.add('on')
+    $('ttGo').textContent = 'Stop'
+    testSay(plan.text)
+    log(`tx test: ${plan.text}`, 'tx')
+    try {
+      const done = await transport.testTone(request)
+      testSay(done.text)
+      log(`tx test: ${done.text}`, 'tx')
+    } catch (failed) {
+      testSay(failed.message, true)
+      log(`tx test: ${failed.message}`, 'err')
+    } finally {
+      testRunning = false
+      $('ttGo').classList.remove('on')
+      $('ttGo').textContent = 'Send'
+      // What the test did stays on screen. Re-running showKind here to put the deviation hint
+      // back wiped the outcome the moment it arrived, so a finished test read as though it had
+      // never happened - found by the page probe, which is the only thing that watches this line.
+    }
+  }
+} else {
+  $('ttKind').disabled = $('ttHz').disabled = $('ttSecs').disabled = true
+  testSay(`The TX test ${tooOld}.`, true)
+}
+
+// Device names only appear after the user has granted audio access, so ask first.
+navigator.mediaDevices.getUserMedia({ audio: true }).then(async (stream) => {
+  stream.getTracks().forEach((t) => t.stop())
+  const devices = await navigator.mediaDevices.enumerateDevices()
+  for (const [kind, select] of [['audioinput', $('input')], ['audiooutput', $('output')]]) {
+    select.innerHTML = ''
+    for (const device of devices.filter((d) => d.kind === kind)) {
+      const option = document.createElement('option')
+      option.value = device.deviceId
+      option.textContent = device.label || `${kind} ${device.deviceId.slice(0, 8)}`
+      select.append(option)
+    }
+  }
+}).catch((e) => log(`no audio access: ${e.message}`, 'err'))
+
+// The picker button follows the keying method: a serial port for RTS/DTR, a HID device for
+// CM108. Both have to be asked for from a click, which is why neither can happen at Start.
+const pttNeedsDevice = () => $('ptt').value !== 'none'
+
+// This page and the package it loads ship on separate schedules: the page deploys on a push to
+// main, the package only on a release, so a keying method can exist here a fortnight before the
+// CDN has the class that implements it. Say which version is wanted rather than letting the
+// button throw "Cannot read properties of undefined".
+if (!Cm108Ptt) {
+  const option = $('ptt').querySelector('option[value="cm108"]')
+  option.disabled = true
+  option.textContent += ` (needs a newer soundmodem than ${version})`
+}
+$('ptt').onchange = async () => {
+  $('pick-ptt').disabled = !pttNeedsDevice()
+  $('pick-ptt').textContent = $('ptt').value === 'cm108' ? 'Device...' : 'Port...'
+  // Hand back whatever was open before picking something else, so switching method does not
+  // leave a serial port or a HID device held by a tab that is no longer using it.
+  const previous = ptt
+  ptt = NoPtt
+  try { await previous.close() } catch { /* already gone */ }
+}
+$('ptt').onchange()
+
+// Every report goes to the console, byte for byte, because that is what anyone bringing a new
+// interface up needs to see. The panel gets the device lines only: it is the frame monitor, and
+// two keying lines per transmission would bury the traffic it is there for.
+const traceCm108 = (message) => {
+  console.debug(`cm108: ${message}`)
+  if (!/^(key|unkey)/.test(message)) log(`cm108: ${message}`, 'sys')
+}
+
+$('pick-ptt').onclick = async () => {
+  try {
+    if ($('ptt').value === 'cm108') {
+      ptt = await Cm108Ptt.request({ debug: traceCm108 })
+      remember({ pttDevice: { kind: 'hid', vendorId: ptt.device.vendorId, productId: ptt.device.productId } })
+      log('CM108 opened. Pick the same dongle for audio in and out and the station is one lead.', 'sys')
+    } else {
+      ptt = await SerialPtt.request({ signal: $('ptt').value === 'dtr' ? 'dtr' : 'rts' })
+      const info = ptt.port.getInfo()
+      remember({ pttDevice: { kind: 'serial', usbVendorId: info.usbVendorId, usbProductId: info.usbProductId } })
+      log(`PTT port opened, keying ${$('ptt').value.toUpperCase()}`, 'sys')
+    }
+  } catch (e) { log(`PTT: ${e.message}`, 'err') }
+}
+
+// The interface that was picked last time, reopened without asking. Web Serial and WebHID both
+// let a page re-open a device the user has already granted it - getPorts and getDevices return
+// exactly those, and neither prompts - so a station that was set up once comes back up on a
+// reload. What is stored is a vendor and product id, which is the least that identifies which of
+// several granted devices was meant; nothing here can reach a device that was never granted.
+// A device that has been unplugged, or a permission the browser has since forgotten, simply is
+// not in the list, and the Port button is still there.
+async function reopenPtt() {
+  const want = recall().pttDevice
+  const method = $('ptt').value
+  if (!want || method === 'none') return
+  try {
+    if (method === 'cm108' && want.kind === 'hid' && navigator.hid && Cm108Ptt) {
+      const device = (await navigator.hid.getDevices())
+        .find((d) => d.vendorId === want.vendorId && d.productId === want.productId)
+      if (!device) return
+      if (!device.opened) await device.open()
+      ptt = new Cm108Ptt(device, 3, traceCm108)
+      await ptt.unkey()
+      log(`CM108 reopened: ${device.productName || 'the dongle you picked last time'}`, 'sys')
+    } else if ((method === 'rts' || method === 'dtr') && want.kind === 'serial' && navigator.serial) {
+      const port = (await navigator.serial.getPorts()).find((p) => {
+        const info = p.getInfo()
+        return info.usbVendorId === want.usbVendorId && info.usbProductId === want.usbProductId
+      })
+      if (!port) return
+      await port.open({ baudRate: 9600 })
+      ptt = new SerialPtt(port, method === 'dtr' ? 'dtr' : 'rts')
+      await ptt.unkey()
+      log(`PTT port reopened, keying ${method.toUpperCase()}`, 'sys')
+    }
+  } catch (e) {
+    log(`PTT: the interface you used last time did not reopen (${e.message}) - pick it again`, 'sys')
+  }
+}
+await reopenPtt()
+
+$('start').onclick = async () => {
+  $('start').disabled = true
+  try {
+    // Say so rather than coming up silently keyless: a station that transmits into an unkeyed
+    // radio looks exactly like one whose audio levels are wrong.
+    if (pttNeedsDevice() && ptt === NoPtt) log('PTT: no device chosen yet, so nothing will be keyed.', 'err')
+    const dspRate = await modem.open({
+      mode: $('mode').value,
+      inputDeviceId: $('input').value || undefined,
+      outputDeviceId: $('output').value || undefined,
+      ptt: $('ptt').value === 'none' ? NoPtt : ptt,
+    })
+    log(`${$('mode').value} running: audio at ${modem.sampleRate} Hz, chain at ${dspRate} Hz`, 'sys')
+
+    transport = new SoundModemTransport(modem, { txDelayMs: parseFloat($('txdelay').value) })
+    listener = new Ax25Listener(transport, {
+      myCall: $('mycall').value.trim(),
+      carrierSense: transport,          // the modem's own busy detector gates every keyup
+    })
+    listener.onFrameTraced((event) => { if (event.direction === 'tx') describe(event.frame, 'tx') })
+    myCall = $('mycall').value.trim().toUpperCase()
+    // Every session that reaches Connected arrives here, whichever end started it - including
+    // the one our own connect() is about to return, because the listener raises this and THEN
+    // resolves the promise with the same session (listener.js, the DL_CONNECT_confirm arm).
+    // So this is the one place a session is taken up, and sessionUp is idempotent, which is
+    // what stops an outbound dial getting two sets of handlers and printing every line the far
+    // end sent twice. Found on air against GB7RDG.
+    listener.onSessionAccepted((accepted) => {
+      if (session && session !== accepted) {
+        // Left where it was on purpose: the box is pointed at a conversation, and moving it
+        // under the operator would send the line they were halfway through typing to somebody
+        // else. One radio, one QSO, and the second caller is still in the monitor.
+        chat(`*** ${accepted.to} also connected; the line box stays with ${session.to}`, 'sys')
+        return
+      }
+      sessionUp(accepted)
+    })
+    await listener.start()
+    $('send').disabled = false
+    sessionDown()
+    // The test keys the radio through the transport, so it waits for the transport like
+    // everything else that transmits.
+    $('ttGo').disabled = !haveTxTest
+    setInterval(paint, 100)
+  } catch (e) {
+    log(`start failed: ${e.message}`, 'err')
+    $('start').disabled = false
+  }
+}
+
+// A decoded frame's address slots are Ax25Address records - a Callsign plus the C/H and
+// end-of-address bits - so it is the callsign inside that has a text form. Stringify the slot
+// itself and every line reads "[object Object]>[object Object]". On a digipeater slot the C/H
+// bit is has-been-repeated, which the usual monitor notation marks with a trailing '*'.
+const addr = (slot, repeated = false) =>
+  `${slot.callsign}${repeated && slot.crhBit ? '*' : ''}`
+
+// The frames of the established session: our callsign and the peer's, in either direction.
+// Their payload belongs to the conversation, which prints it in order, de-duplicated and
+// reassembled - none of which a frame-by-frame monitor is. So the monitor shows their header and
+// leaves the text to the session, and to the echo of what you typed. Printing both is how one
+// line of QSO became two lines on screen, and three once the link retried.
+const partOfSession = (frame) => {
+  if (!session) return false
+  const ends = [frame.source, frame.destination].map((a) => String(a.callsign).toUpperCase())
+  return ends.includes(String(session.to).toUpperCase()) && ends.includes(myCall)
+}
+
+// Every decoded frame reaches the monitor whether or not the session layer wanted it.
+const describe = (frame, kind) => {
+  try {
+    const digis = frame.digipeaters?.length
+      ? ',' + frame.digipeaters.map((d) => addr(d, true)).join(',')
+      : ''
+    // On its own line when there is one, and no line at all when there is not: a supervisory
+    // frame carries no text, and the empty line under every RR was pure noise.
+    const info = frame.info?.length && !partOfSession(frame)
+      ? '\n' + new TextDecoder().decode(frame.info).replace(/\r/g, '\n')
+      : ''
+    log(`${addr(frame.source)}>${addr(frame.destination)}${digis} <${classify(frame)}>${info}`, kind)
+  } catch { log('(unparsable frame)', 'err') }
+}
+
+$('send').onclick = async () => {
+  $('send').disabled = true
+  try {
+    await listener.sendUi(
+      Callsign.parse($('unproto').value.trim()),
+      new TextEncoder().encode($('beacon').value))
+  } catch (e) {
+    log(`send failed: ${e.message}`, 'err')
+  } finally {
+    $('send').disabled = false
+  }
+}
+
+// ---------------------------------------------------------------- the connected-mode session
+// One session at a time, whichever end started it, and three controls that follow it: C, D, and
+// the line box under the monitor. They are driven from here rather than from each handler, so a
+// link that goes away on its own - the peer sending DISC, or the retry limit running out - puts
+// the page back exactly as a D would.
+// Takes up a session, once. Called for every session the listener brings up and again by the
+// connect that asked for one, so it has to be safe to call twice with the same session: the
+// second call only repaints.
+function sessionUp(established) {
+  session = established
+  if (!wired.has(established)) {
+    wired.add(established)
+    chat(`*** connected ${dialling === String(established.to).toUpperCase() ? 'to' : 'by'} `
+      + `${established.to}`, 'sys')
+    established.onData(deliver)
+    established.onDisconnected(() => {
+      chat(`*** disconnected from ${established.to}`, 'sys')
+      // A link that ends closes whatever line the far end had left open, so the next QSO does
+      // not continue onto the last row of the one before it.
+      openLine = null
+      if (session === established) sessionDown()
+    })
+  }
+  paintSession()
+}
+
+function sessionDown() {
+  session = null
+  paintSession()
+}
+
+function paintSession() {
+  $('connect').disabled = !listener || !!session
+  $('disconnect').disabled = !session
+  $('line').disabled = !session
+  $('line').placeholder = session
+    ? `type a line to ${session.to} and press enter`
+    : 'connect to a station, then type here and press enter'
+  if (session) $('line').focus()
+}
+
+// Who we are dialling, while we are, so the line above can say "connected to" rather than
+// "connected by" for a session we asked for. Nothing else depends on it.
+let dialling = null
+
+$('connect').onclick = async () => {
+  const peer = $('peer').value.trim()
+  if (!peer) return log('connect: put a callsign in the box first', 'err')
+  $('connect').disabled = true
+  dialling = peer.toUpperCase()
+  chat(`*** connect to ${peer}...`, 'sys')
+  try {
+    // The listener has already handed this to onSessionAccepted; taking it again is the
+    // idempotent no-op that makes this path independent of which order those two happen in.
+    sessionUp(await listener.connect(peer))
+  } catch (e) {
+    chat(`*** connect failed: ${e.message}`, 'err')
+    paintSession()
+  } finally {
+    dialling = null
+  }
+}
+
+$('disconnect').onclick = async () => {
+  const going = session
+  if (!going) return
+  $('disconnect').disabled = true
+  chat(`*** disconnect from ${going.to}...`, 'sys')
+  try {
+    await going.disconnect()
+  } catch (e) {
+    // The link is going either way: a DISC that is not answered still ends in Disconnected once
+    // the retries run out, and leaving the page believing it is connected would be worse.
+    chat(`*** disconnect: ${e.message}`, 'err')
+  } finally {
+    if (session === going) sessionDown()
+  }
+}
+
+// Enter sends the line. Echoed once the session has taken it rather than on the keystroke, so
+// what is on screen is what actually went into the transmit queue.
+$('line').onkeydown = async (event) => {
+  if (event.key !== 'Enter') return
+  const text = $('line').value
+  const going = session
+  if (!text || !going) return
+  $('line').value = ''
+  try {
+    await going.write(new TextEncoder().encode(`${text}\r`))
+    chat(text, 'me')
+  } catch (e) {
+    chat(`*** send failed: ${e.message}`, 'err')
+    // Handed back rather than lost: a line that did not go is still a line you typed.
+    if (!$('line').value) $('line').value = text
+  }
+}
+
+// The lamps are the modem's own view of the channel, read at slot-time resolution.
+function paint() {
+  $('dcd').className = `dot ${modem.carrierDetect ? 'on' : ''}`
+  $('busy').className = `dot ${modem.channelBusy() && !modem.transmitting ? 'on' : ''}`
+  $('tx').className = `dot ${modem.transmitting ? 'tx' : ''}`
+  paintMeter()
+}
+
+// The monitor gets frames straight from the modem too, so a frame addressed to nobody here
+// is still visible - a soundcard modem hears the whole channel and there is no reason to
+// throw that away.
+modem.onFrame((bytes) => {
+  try { describe(decodeFrame(bytes), '') }
+  catch { log(`raw ${bytes.length} bytes`, 'sys') }
+})
+</script>
+</body>
+</html>

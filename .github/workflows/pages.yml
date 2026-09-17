@@ -1,0 +1,100 @@
+name: pages
+
+# Publishes the apps that are served from this repository's GitHub Pages site, one directory
+# each, to https://packet-net.github.io/pdn-web/.
+#
+# Not every app here goes this way. packet-term-web is uploaded to OARC object storage and
+# served from packet-term.m0lte.uk (see publish-packet-term-web.yml); this workflow is for the
+# ones on Pages. Each app keeps the pipeline it already had, and adding a directory here is how
+# a new one joins this side of the split.
+#
+# There is no version-pinning step. soundmodem-web asks jsDelivr for the newest 0.x of
+# @packet-net/soundmodem rather than naming a release, so a new modem release reaches the page on
+# its own and this workflow only has to run when the page itself changes.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'soundmodem-web/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    # GitHub-hosted on purpose. This job builds nothing: it copies static files about. The
+    # self-hosted runners take one job at a time and are there for toolchains, and a static-file
+    # deploy queued behind a compile is a deploy waiting for no reason.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assemble the site
+        run: |
+          set -euo pipefail
+          rm -rf _site
+          mkdir -p _site/soundmodem-web
+          # The app, and nothing else in its directory: node_modules is the page probe's, and
+          # package.json describes the probe rather than anything the browser needs.
+          cp soundmodem-web/index.html _site/soundmodem-web/index.html
+          # A front page, so the site root is a list of what is here rather than a 404.
+          cat > _site/index.html <<'HTML'
+          <!doctype html>
+          <html lang="en">
+          <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>packet.net browser apps</title>
+          <style>
+            :root { color-scheme: dark; }
+            body { margin:0; padding:40px 24px; background:#101418; color:#d6e0ea;
+                   font:15px/1.6 ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+            main { max-width:640px; margin:0 auto; }
+            h1 { font-size:17px; letter-spacing:.02em; }
+            a { color:#93c5fd; }
+            li { margin:14px 0; }
+            .k { color:#7d8a99; font-size:13px; display:block; }
+          </style>
+          </head>
+          <body><main>
+            <h1>packet.net browser apps</h1>
+            <p>Packet radio in a browser tab, from the
+               <a href="https://github.com/packet-net/pdn-web">pdn-web</a> repository.</p>
+            <ul>
+              <li><a href="soundmodem-web/">soundmodem-web</a>
+                <span class="k">A station on a sound card: every NinoTNC mode, connected-mode
+                sessions, levels and a transmitter test. Needs Chrome, Edge or Opera on
+                desktop.</span></li>
+              <li><a href="https://packet-term.m0lte.uk">packet-term-web</a>
+                <span class="k">A TNC2 terminal for a KISS modem on a serial port. Served from
+                its own domain; the source is in this repository.</span></li>
+            </ul>
+          </main></body>
+          </html>
+          HTML
+          find _site -type f | sort
+
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

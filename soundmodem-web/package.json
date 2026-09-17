@@ -1,0 +1,13 @@
+{
+  "name": "soundmodem-web",
+  "private": true,
+  "type": "module",
+  "description": "A browser station on a sound card: the page probe's dependencies. The page itself loads these from a CDN at run time and has no build step.",
+  "scripts": {
+    "test": "node test/page-probe.mjs && node test/page-probe.mjs old"
+  },
+  "devDependencies": {
+    "@packet-net/ax25": "0.18.0",
+    "@packet-net/soundmodem": "0.71.0"
+  }
+}
