@@ -245,8 +245,8 @@
 // behind until something went and re-pinned it - a workflow, a token across two repositories,
 // and a thing to remember. A CARET RANGE WOULD NOT DO THIS: on a 0.x version caret means
 // patch-only, and `@packet-net/soundmodem@^0.69.0` resolves to 0.69.0 on jsDelivr (checked). The
-// bare major is what tracks minor releases. The cost is that jsDelivr caches a floating range
-// for hours, so a brand-new release reaches this page a little after it reaches npm.
+// bare major is what tracks minor releases. It is resolved to an exact version before anything is
+// imported, for the reason given at resolveModem below.
 const PKG = {
   soundmodem: '@packet-net/soundmodem@0',
   ax25: '@packet-net/ax25@0.18.0',
@@ -268,7 +268,28 @@ const esm = (spec) => `https://esm.sh/${spec}`
 // pointed at a pdn-soundmodem working tree (run its web/build.sh first, so the WebAssembly
 // bundle is there for this to find).
 const local = new URLSearchParams(location.search).has('local')
-const modemUrl = local ? './node_modules/@packet-net/soundmodem/src/index.js' : jsdelivr(PKG.soundmodem)
+
+// The range is resolved to one release here, once, and every file then comes from that exact
+// version. Importing through the range itself does not work: jsDelivr resolves a range per file
+// and tells the browser to keep each one for a week, so a returning visitor can hold
+// dotnet.boot.js from one release and fetch the WebAssembly from the next, and the boot
+// manifest's integrity hashes then block every module. That happened on the 0.78.0 release.
+// An exact version is immutable, so its files always agree. The resolve endpoint is cached for
+// seconds rather than days, which also means a release now reaches the page within minutes. If it
+// cannot be reached, fall back to the range, which is what the page did before.
+const resolveModem = async () => {
+  const at = PKG.soundmodem.lastIndexOf('@')
+  try {
+    const answer = await fetch('https://data.jsdelivr.com/v1/packages/npm/'
+      + `${PKG.soundmodem.slice(0, at)}/resolved?specifier=${PKG.soundmodem.slice(at + 1)}`)
+    return (await answer.json()).version || null
+  } catch {
+    return null
+  }
+}
+const modemVersion = local ? null : await resolveModem()
+const modemSpec = modemVersion ? `@packet-net/soundmodem@${modemVersion}` : PKG.soundmodem
+const modemUrl = local ? './node_modules/@packet-net/soundmodem/src/index.js' : jsdelivr(modemSpec)
 
 const { SoundModem, SerialPtt, Cm108Ptt, NoPtt, SoundModemTransport } = await import(modemUrl)
 const { Ax25Listener, Callsign, decodeFrame, classify } = await import(esm(PKG.ax25))
@@ -433,11 +454,11 @@ for (const id of REMEMBERED) {
   el.addEventListener('change', () => remember())
   el.addEventListener('input', () => remember())
 }
-// Which version actually arrived. The spec above is a range, so the only way to state it is to
-// ask the CDN what it resolved to - and stating it is the point, because a banner that reports
-// what was asked for rather than what was loaded is worse than no banner. Cheap: the same range,
-// so the CDN has it cached from the import that just happened.
-const version = local ? 'local copy' : await fetch(`https://cdn.jsdelivr.net/npm/${PKG.soundmodem}/package.json`)
+// Which version actually arrived. Normally that is the one resolved above; only when that lookup
+// failed and the page imported through the range does it have to ask the CDN what the range gave
+// it - and stating it is the point, because a banner that reports what was asked for rather than
+// what was loaded is worse than no banner.
+const version = local ? 'local copy' : modemVersion || await fetch(`https://cdn.jsdelivr.net/npm/${PKG.soundmodem}/package.json`)
   .then((answer) => answer.json())
   .then((manifest) => manifest.version)
   .catch(() => PKG.soundmodem.slice(PKG.soundmodem.lastIndexOf('@') + 1))
