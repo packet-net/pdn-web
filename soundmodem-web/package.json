@@ -7,7 +7,7 @@
     "test": "node test/page-probe.mjs && node test/page-probe.mjs old"
   },
   "devDependencies": {
-    "@packet-net/ax25": "0.18.0",
+    "@packet-net/ax25": "0.20.0",
     "@packet-net/soundmodem": "0.71.0"
   }
 }
