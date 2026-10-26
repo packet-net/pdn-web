@@ -43,6 +43,18 @@ jobs:
       - name: Check the tools this job needs
         run: scripts/ci-require-tools.sh curl:curl python3:python3
 
+      # The runner has no python3-venv package and no root, so uv (which makes venvs without it)
+      # is installed into the runner account's home when it is missing.
+      - name: Ensure uv
+        run: |
+          if ! command -v uv >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/uv" ]; then
+            curl --proto '=https' --tlsv1.2 -LsSf https://astral.sh/uv/install.sh \
+              | env UV_INSTALL_DIR="$HOME/.local/bin" INSTALLER_NO_MODIFY_PATH=1 sh
+          fi
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          uv --version
+
       - name: fetch OARC object storage CLI
         # Pulled fresh on every run - the CLI is small and OARC is the
         # canonical home for it. No vendoring + no version-pin: we always
@@ -53,8 +65,8 @@ jobs:
             https://compute.oarc.uk/static/downloads/object-storage-cli.zip
           # python -m zipfile avoids needing `unzip` on the runner image
           python3 -m zipfile -e "${RUNNER_TEMP}/object-storage-cli.zip" "${RUNNER_TEMP}"
-          python3 -m venv "${RUNNER_TEMP}/venv"
-          "${RUNNER_TEMP}/venv/bin/pip" install --quiet -r \
+          uv venv "${RUNNER_TEMP}/venv"
+          uv pip install --quiet --python "${RUNNER_TEMP}/venv/bin/python" -r \
             "${RUNNER_TEMP}/object-storage-cli/requirements.txt"
 
       - name: upload index.html
