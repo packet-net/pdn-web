@@ -40,6 +40,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Check the tools this job needs
+        run: scripts/ci-require-tools.sh curl:curl python3:python3
+
       - name: fetch OARC object storage CLI
         # Pulled fresh on every run - the CLI is small and OARC is the
         # canonical home for it. No vendoring + no version-pin: we always
